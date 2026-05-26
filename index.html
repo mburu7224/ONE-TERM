@@ -33,6 +33,18 @@
                     </a></li>
                 </ul>
             </nav>
+            <hr class="sidebar-divider" aria-hidden="true">
+            <div class="sidebar-footer">
+                <a href="#" id="savedVideosNavBtn" class="nav-link">
+                    <span class="icon">🔖</span>
+                    <span class="text">Saved Videos</span>
+                </a>
+
+                <a href="#" id="supportBtn" class="nav-link" role="button" aria-haspopup="dialog" aria-controls="supportModal">
+                    <span class="icon">❤️</span>
+                    <span class="text">Support Our Work</span>
+                </a>
+            </div>
         </div>
 
                 <div class="sidebar-overlay" id="sidebarOverlay"></div>
@@ -169,6 +181,14 @@
                         ></iframe>
                     </div>
                 </section>
+                    <!-- Saved Videos Section (rendered from localStorage) -->
+                    <section id="saved-videos-section" class="content-section">
+                        <div class="section-strip">
+                            <h2>Saved Videos</h2>
+                            <span>Your bookmarked videos</span>
+                        </div>
+                        <div id="savedVideosLibraryContainer" class="saved-videos-library"></div>
+                    </section>
             </main>
         </div>
     </div>
@@ -214,6 +234,57 @@
         </div>
     </div>
 
+    <!-- Support Modal -->
+    <div id="supportModal" class="support-modal" aria-hidden="true">
+        <div class="support-modal-backdrop" data-close-support></div>
+        <div class="support-modal-panel" role="dialog" aria-modal="true" aria-labelledby="supportModalTitle">
+            <button class="support-modal-close" type="button" aria-label="Close support" data-close-support>
+                <i class="fas fa-times" aria-hidden="true"></i>
+            </button>
+            <h2 id="supportModalTitle"><i class="fas fa-heart" aria-hidden="true"></i> Support Our Work</h2>
+            <div class="support-modal-body">
+                <div class="support-tabs">
+                    <button type="button" class="support-tab active" data-tab="general">General</button>
+                    <button type="button" class="support-tab" data-tab="project">Project</button>
+                </div>
+
+                <form id="supportForm" class="support-form">
+                    <div class="form-row">
+                        <label for="mpesaPhone">M-Pesa Phone Number</label>
+                        <input id="mpesaPhone" name="phone" type="tel" placeholder="07XXXXXXXX" inputmode="tel" required>
+                    </div>
+                    <div class="form-row">
+                        <label for="mpesaAmount">Amount (KES)</label>
+                        <input id="mpesaAmount" name="amount" type="number" min="1" placeholder="500" required>
+                    </div>
+                    <div id="projectSelectRow" class="form-row hidden">
+                        <label for="projectSelect">Select Project</label>
+                        <div class="select-dropdown">
+                            <select id="projectSelect" name="project">
+                                <option value="equipment">🎥 Equipment Purchase (Cameras, Mics)</option>
+                                <option value="charity">🤝 Community Charity Outreach</option>
+                                <option value="web">💻 Web Platform Development</option>
+                            </select>
+                            <i class="fas fa-chevron-down dropdown-arrow"></i>
+                        </div>
+                    </div>
+                    <div class="form-actions">
+                        <button id="supportSubmit" type="submit" class="primary-btn">Support</button>
+                    </div>
+                </form>
+
+                <div id="stkListening" class="stk-listening hidden" aria-live="polite">
+                    <div class="spinner" aria-hidden="true"></div>
+                    <p class="stk-text">Please check your phone. A prompt will appear on your screen asking you to enter your M-Pesa PIN to authorize the payment.</p>
+                    <p class="stk-countdown">Time remaining: <span id="stkSeconds">90</span>s</p>
+                    <div class="form-actions">
+                        <button id="stkCancel" type="button">Cancel</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
         <div id="registration-modal" class="registration-modal hidden" aria-hidden="true">
         <div class="registration-modal-overlay"></div>
         <div class="registration-modal-content">
@@ -229,6 +300,7 @@
 
 
         <script src="https://www.youtube.com/iframe_api"></script>
+    <script src="./localstorage.js"></script>
     <script type="module" src="./script.js"></script>
 </body>
 </html>

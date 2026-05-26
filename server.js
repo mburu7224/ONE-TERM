@@ -57,6 +57,42 @@ function serveStatic(req, res) {
         return;
     }
 
+    // API: POST /mpesa/pay -> bridge to mpesa-integration module
+    if (requestedPath === '/mpesa/pay' && req.method === 'POST') {
+        let raw = '';
+        req.on('data', (chunk) => { raw += chunk; });
+        req.on('end', async () => {
+            try {
+                const payload = raw ? JSON.parse(raw) : {};
+                // Load mpesa integration module
+                const mpesa = require(path.join(rootDir, 'mpesa-integration'));
+                // Read consumer credentials from environment variables (keep them secure)
+                const consumerKey = process.env.MPESA_CONSUMER_KEY;
+                const consumerSecret = process.env.MPESA_CONSUMER_SECRET;
+                if (!consumerKey || !consumerSecret) {
+                    send(res, 500, JSON.stringify({ success: false, error: 'Missing MPESA credentials on server' }), 'application/json; charset=utf-8');
+                    return;
+                }
+
+                // Validate expected fields
+                const { category, method, projectName, phone, amount } = payload || {};
+                if (!category || !method || !phone || !amount) {
+                    send(res, 400, JSON.stringify({ success: false, error: 'Missing required fields: category, method, phone, amount' }), 'application/json; charset=utf-8');
+                    return;
+                }
+
+                // Call processPayment with server-side credentials
+                const result = await mpesa.processPayment({ category, method, projectName, phone, amount, consumerKey, consumerSecret });
+                send(res, 200, JSON.stringify({ success: true, data: result }), 'application/json; charset=utf-8');
+            } catch (err) {
+                console.error('MPESA /mpesa/pay error:', err);
+                const message = err && err.body ? err.body : (err && err.message) || String(err);
+                send(res, 500, JSON.stringify({ success: false, error: message }), 'application/json; charset=utf-8');
+            }
+        });
+        return;
+    }
+
     fs.readFile(filePath, (error, data) => {
         if (error) {
             send(res, 404, 'Not found', 'text/plain; charset=utf-8');

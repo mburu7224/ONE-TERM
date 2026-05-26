@@ -400,6 +400,99 @@ async function copyShareLink() {
     }
 }
 
+// ---------------- MPESA FRONTEND BRIDGE ----------------
+// This section provides a small, drop-in bridge to send support payments
+// to the backend endpoint POST /mpesa/pay. It expects a form with id
+// `mpesaSupportForm` and input/select ids: `supportPhone`, `supportAmount`,
+// `supportCategory` (GENERAL_SUPPORT|PROJECT_SPECIFIC), `supportMethod` (paybill|till),
+// and optional `supportProject` for project selection.
+
+function start90SecondCountdown(containerEl, onComplete) {
+    let remaining = 90;
+    const countdownEl = containerEl.querySelector('.mpesa-countdown') || containerEl.querySelector('#mpesaCountdown');
+    const timer = setInterval(() => {
+        remaining -= 1;
+        if (countdownEl) countdownEl.textContent = `${remaining}s`;
+        if (remaining <= 0) {
+            clearInterval(timer);
+            if (typeof onComplete === 'function') onComplete();
+        }
+    }, 1000);
+    return () => clearInterval(timer);
+}
+
+async function sendMpesaRequest(payload) {
+    try {
+        const resp = await fetch('/mpesa/pay', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+        const data = await resp.json();
+        return data;
+    } catch (err) {
+        console.error('sendMpesaRequest error', err);
+        throw err;
+    }
+}
+
+function attachMpesaSupportFormBridge() {
+    const form = document.getElementById('mpesaSupportForm');
+    if (!form) return; // nothing to attach
+
+    form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const phone = document.getElementById('supportPhone')?.value?.trim();
+        const amount = Number(document.getElementById('supportAmount')?.value);
+        const category = document.getElementById('supportCategory')?.value || 'GENERAL_SUPPORT';
+        const method = document.getElementById('supportMethod')?.value || 'paybill';
+        const projectName = document.getElementById('supportProject')?.value || null;
+
+        if (!phone || !amount || isNaN(amount) || amount <= 0) {
+            notifyUser(false, 'Please enter a valid phone number and amount.');
+            return;
+        }
+
+        // Immediately hide form inputs and show listening state UI if present
+        const formContainer = form.closest('.mpesa-form-container') || form;
+        const listening = document.querySelector('.mpesa-listening') || document.getElementById('mpesaListening');
+        if (formContainer) formContainer.style.display = 'none';
+        if (listening) listening.style.display = 'flex';
+
+        try {
+            const payload = { phone, amount, category, method, projectName };
+            const result = await sendMpesaRequest(payload);
+            if (result && result.success) {
+                // start 90s countdown in the listening UI
+                const listeningContainer = listening || document.body;
+                const onComplete = () => {
+                    if (listeningContainer) listeningContainer.style.display = 'none';
+                    notifyUser(false, 'STK Push listening timed out. Please try again.');
+                };
+                start90SecondCountdown(listeningContainer, onComplete);
+            } else {
+                // backend returned failure; show error and restore form
+                notifyUser(false, result && result.error ? JSON.stringify(result.error) : 'Payment initiation failed');
+                if (formContainer) formContainer.style.display = '';
+                if (listening) listening.style.display = 'none';
+            }
+        } catch (err) {
+            notifyUser(false, 'Connection error initiating payment.');
+            if (formContainer) formContainer.style.display = '';
+            if (listening) listening.style.display = 'none';
+        }
+    });
+}
+
+// Expose initializer for pages that dynamically render the modal
+window.initMpesaSupportBridge = attachMpesaSupportFormBridge;
+
+// Attempt auto-attach on load
+document.addEventListener('DOMContentLoaded', () => {
+    try { attachMpesaSupportFormBridge(); } catch (e) { /* ignore */ }
+});
+
+
 function downloadCurrentVideo() {
     const item = currentWatchDoc?.data || {};
     const url = item.url || '';
@@ -1668,6 +1761,10 @@ function renderPlayerDetails(docItem) {
             <button class="watch-action-btn watch-download-btn" type="button">
                 <i class="fas fa-download" aria-hidden="true"></i> Download
             </button>
+            <button id="saveVideoBtn" class="watch-action-btn watch-save-btn" type="button">
+                <span class="icon">🔖</span>
+                <span class="btn-text">Save</span>
+            </button>
         </div>
         <p>${escapeHtml(item.description || 'No description provided.')}</p>
         ${item.topic ? `<div class="watch-topic">Topic: ${escapeHtml(item.topic)}</div>` : ''}
@@ -1677,6 +1774,100 @@ function renderPlayerDetails(docItem) {
         </section>
     `;
     renderWatchMoreGrid(docItem);
+
+    // --- Save button state & handler ---
+    try {
+        const saveBtn = document.getElementById('saveVideoBtn');
+        const itemUrl = (item && (item.url || item.fileUrl || item.source)) || '';
+
+        function setSavedUI() {
+            if (!saveBtn) return;
+            saveBtn.classList.add('saved-active');
+            const txt = saveBtn.querySelector('.btn-text');
+            if (txt) txt.textContent = 'Saved';
+        }
+
+        function setUnsavedUI() {
+            if (!saveBtn) return;
+            saveBtn.classList.remove('saved-active');
+            const txt = saveBtn.querySelector('.btn-text');
+            if (txt) txt.textContent = 'Save';
+        }
+
+        // Local storage helpers moved to localstorage.js — use global APIs
+        function isSaved(url) {
+            if (!url) return false;
+            try {
+                const list = (typeof getSavedVideos === 'function') ? getSavedVideos() : (window.getSavedVideos ? window.getSavedVideos() : []);
+                return list.some(i => i && i.url === url);
+            } catch (e) { return false; }
+        }
+
+        // Initialize state based on localStorage unified list
+        if (isSaved(itemUrl)) setSavedUI(); else setUnsavedUI();
+
+        // Attach click handler to save metadata locally and maintain savedVideos array
+        if (saveBtn) {
+            saveBtn.onclick = function () {
+                if (!itemUrl) {
+                    notifyUser(false, 'No video URL found to save.');
+                    return;
+                }
+                try {
+                    // Attempt to capture the active player's thumbnail/poster image.
+                    let thumbnailUrl = '';
+                    try {
+                        const player = getPlayerContainer();
+                        if (player) {
+                            const vid = player.querySelector('video');
+                            if (vid) {
+                                thumbnailUrl = vid.getAttribute('poster') || vid.dataset.poster || '';
+                            }
+                            if (!thumbnailUrl) {
+                                const overlayImg = player.querySelector('img.player-poster, img.player-thumb, .player-poster img, .player-thumb img, img[data-role="poster"], img.thumbnail-item img');
+                                if (overlayImg) thumbnailUrl = overlayImg.src || overlayImg.getAttribute('src') || '';
+                            }
+                        }
+                    } catch (e) { /* ignore DOM access errors */ }
+
+                    // Fallback to metadata or YouTube generated thumbnail
+                    if (!thumbnailUrl) thumbnailUrl = item.thumbnailUrl || '';
+                    if (!thumbnailUrl && item.url) {
+                        const yt = getYouTubeVideoId(item.url);
+                        if (yt) thumbnailUrl = `https://i.ytimg.com/vi/${yt}/hqdefault.jpg`;
+                    }
+
+                    // Ensure metadata contains thumbnail for consistency across the app
+                    if (thumbnailUrl && (!item.thumbnailUrl || item.thumbnailUrl !== thumbnailUrl)) {
+                        try { item.thumbnailUrl = thumbnailUrl; } catch (e) { /* ignore */ }
+                    }
+
+                    const payload = {
+                        id: item.id || item.videoId || item.url || String(Date.now()),
+                        title: item.title || '',
+                        url: itemUrl,
+                        metadata: item,
+                        thumbnailUrl: thumbnailUrl || '',
+                        savedAt: Date.now()
+                    };
+                    try {
+                        if (typeof saveVideoToDevice === 'function') saveVideoToDevice(payload);
+                        else if (window.saveVideoToDevice) window.saveVideoToDevice(payload);
+                    } catch (e) { /* ignore */ }
+                    // Visual feedback: add green state and update text
+                    saveBtn.classList.add('saved-active');
+                    const txt = saveBtn.querySelector('.btn-text');
+                    if (txt) txt.textContent = 'Saved';
+                    notifyUser(true, 'Video saved locally.');
+                } catch (err) {
+                    console.error('Save video error', err);
+                    notifyUser(false, 'Unable to save video.');
+                }
+            };
+        }
+    } catch (e) {
+        console.warn('Save button setup failed', e);
+    }
 }
 
 function renderWatchMoreGrid(selectedDoc) {
@@ -1695,6 +1886,214 @@ function renderWatchMoreGrid(selectedDoc) {
         grid.appendChild(card);
     });
 }
+
+// ---------------- Saved Videos Library ----------------
+function renderSavedVideosLibrary() {
+    const container = document.getElementById('savedVideosLibraryContainer');
+    if (!container) return;
+    const saved = (typeof getSavedVideos === 'function') ? getSavedVideos() : (window.getSavedVideos ? window.getSavedVideos() : []);
+    container.innerHTML = '';
+
+    if (!saved.length) {
+        const empty = document.createElement('div');
+        empty.className = 'saved-empty-state';
+        empty.innerHTML = `<div style="padding:40px;text-align:center;color:#444;">You haven't saved any videos yet. Click the 'Save' button under any video to bookmark it here!</div>`;
+        container.appendChild(empty);
+        return;
+    }
+
+    const grid = document.createElement('div');
+    grid.className = 'saved-grid';
+    grid.style.display = 'grid';
+    grid.style.gridTemplateColumns = 'repeat(auto-fit, minmax(240px, 1fr))';
+    grid.style.gap = '14px';
+
+    saved.forEach((entry, idx) => {
+        const meta = entry.metadata || {};
+        const url = entry.url || '';
+        const title = entry.title || meta.title || 'Untitled';
+        const date = meta.eventDate || meta.createdAt || '';
+        const category = meta.category || meta.by || '';
+
+        const card = document.createElement('div');
+        card.className = 'saved-card';
+        card.style.background = '#fff';
+        card.style.border = '1px solid var(--border-color)';
+        card.style.borderRadius = '12px';
+        card.style.overflow = 'hidden';
+        card.style.display = 'flex';
+        card.style.flexDirection = 'column';
+
+        const thumb = document.createElement('div');
+        thumb.className = 'saved-thumb';
+        thumb.style.height = '140px';
+        thumb.style.background = '#f3f4f6';
+        thumb.style.display = 'flex';
+        thumb.style.alignItems = 'center';
+        thumb.style.justifyContent = 'center';
+        const img = document.createElement('img');
+        img.style.maxWidth = '100%';
+        img.style.maxHeight = '100%';
+        img.alt = title;
+        img.className = 'video-thumbnail-img';
+        img.loading = 'lazy';
+        // Prefer the explicit saved thumbnailUrl, then metadata, then YouTube fallback, then placeholder
+        const thumbUrl = entry.thumbnailUrl || meta.thumbnailUrl || (entry.url && getYouTubeVideoId(entry.url) ? `https://i.ytimg.com/vi/${getYouTubeVideoId(entry.url)}/hqdefault.jpg` : 'https://via.placeholder.com/480x270.png?text=No+Thumbnail');
+        img.src = thumbUrl;
+        thumb.appendChild(img);
+
+        const body = document.createElement('div');
+        body.style.padding = '12px';
+        body.style.display = 'flex';
+        body.style.flexDirection = 'column';
+        body.style.gap = '8px';
+
+        const h = document.createElement('div');
+        h.style.fontWeight = '700';
+        h.style.fontSize = '0.95rem';
+        h.textContent = title;
+
+        const sub = document.createElement('div');
+        sub.style.fontSize = '0.85rem';
+        sub.style.color = '#666';
+        sub.textContent = [date, category].filter(Boolean).join(' · ');
+
+        const actions = document.createElement('div');
+        actions.style.display = 'flex';
+        actions.style.gap = '8px';
+        actions.style.marginTop = 'auto';
+
+        const watchBtn = document.createElement('button');
+        watchBtn.type = 'button';
+        watchBtn.className = 'watch-now-btn watch-action-btn';
+        watchBtn.textContent = '▶️ Watch Now';
+        watchBtn.onclick = () => {
+            // Mirror the exact native flow: force UI switch, reset scroll, then call native player loader.
+            try {
+                // Pause any other media first to avoid overlapping audio
+                try { pauseAllMedia(); } catch (e) { /* ignore */ }
+
+                // Ensure content sections are hidden and theater is visible
+                document.querySelectorAll('.content-section').forEach(section => section.classList.remove('active'));
+                // Update nav active state (clear saved tab highlight)
+                document.querySelectorAll('.nav-item').forEach(item => item.classList.remove('active'));
+
+                // Show theater container exactly like Home does
+                const theater = document.getElementById('theaterContainer');
+                if (theater) {
+                    theater.classList.remove('hidden');
+                    theater.style.display = 'flex';
+                }
+
+                // Reset page scroll so the player is visible at top of viewport (same as native behavior)
+                try { window.scrollTo({ top: 0, behavior: 'smooth' }); } catch (e) { window.scrollTo(0, 0); }
+            } catch (e) { console.warn('Failed to perform view switch for saved video', e); }
+
+            // Build a canonical docItem that mirrors the shape used across the app
+            const savedList = (typeof getSavedVideos === 'function') ? getSavedVideos() : (window.getSavedVideos ? window.getSavedVideos() : []);
+            const docData = Object.assign({}, (entry.metadata || {}));
+            docData.url = entry.url || docData.url;
+            if (entry.thumbnailUrl) docData.thumbnailUrl = entry.thumbnailUrl;
+            if (entry.title) docData.title = entry.title;
+            const docItem = { id: entry.id || entry.url || `saved_${idx}`, data: docData };
+
+            // Build an array of docs in the same shape so the native player can set the playlist
+            const allDocs = savedList.map((e) => ({ id: e.id || e.url || String(e.savedAt || ''), data: Object.assign({}, (e.metadata || {}), { url: e.url, thumbnailUrl: e.thumbnailUrl, title: e.title }) }));
+
+            // Finally, call the native theater loader so everything behaves exactly like Home.
+            if (typeof openTheaterWithVideo === 'function') {
+                openTheaterWithVideo(docItem, allDocs);
+            } else if (typeof playWatchVideo === 'function') {
+                playWatchVideo(docItem);
+            }
+        };
+
+        const removeBtn = document.createElement('button');
+        removeBtn.type = 'button';
+        removeBtn.className = 'remove-saved-btn watch-action-btn';
+        removeBtn.textContent = '🗑️ Remove';
+        removeBtn.onclick = () => {
+            try {
+                if (typeof removeVideoFromDevice === 'function') removeVideoFromDevice(url);
+                else if (window.removeVideoFromDevice) window.removeVideoFromDevice(url);
+            } catch (e) { /* ignore */ }
+            // If the currently displayed video matches the removed one, remove saved-active from button
+            const saveBtn = document.getElementById('saveVideoBtn');
+            if (saveBtn && saveBtn.classList.contains('saved-active')) {
+                const currentUrl = (window.currentWatchDoc && window.currentWatchDoc.data && (window.currentWatchDoc.data.url || '')) || '';
+                if (currentUrl === url) {
+                    saveBtn.classList.remove('saved-active');
+                    const txt = saveBtn.querySelector('.btn-text'); if (txt) txt.textContent = 'Save';
+                }
+            }
+            renderSavedVideosLibrary();
+        };
+
+        actions.appendChild(watchBtn);
+        actions.appendChild(removeBtn);
+
+        body.appendChild(h);
+        body.appendChild(sub);
+        body.appendChild(actions);
+
+        card.appendChild(thumb);
+        card.appendChild(body);
+
+        grid.appendChild(card);
+    });
+
+    container.appendChild(grid);
+}
+
+// Wire sidebar saved nav button to reuse navigation flow
+document.addEventListener('DOMContentLoaded', () => {
+    const savedNav = document.getElementById('savedVideosNavBtn');
+    if (!savedNav) return;
+    savedNav.addEventListener('click', (e) => {
+        e.preventDefault();
+        try { pauseAllMedia(); } catch (e) { /* ignore */ }
+        try { closeWatchView(); } catch (e) { /* ignore */ }
+
+        // Local references (query inside this handler to avoid cross-scope issues)
+        const navItems = document.querySelectorAll('.nav-item, .nav-link');
+        const searchInput = document.getElementById('searchInput');
+        const eventDateFilterInput = document.getElementById('eventDateFilter');
+        const clearDateFilterButton = document.getElementById('clearDateFilter');
+        const sidebarWrapper = document.querySelector('.sidebar-wrapper');
+        const activeSectionTitle = document.getElementById('activeSectionTitle');
+
+        if (activeSectionTitle) activeSectionTitle.textContent = 'Saved Videos';
+        if (searchInput) searchInput.value = '';
+        window.currentSearchTerm = '';
+        window.homeSearchTerm = '';
+        if (eventDateFilterInput) eventDateFilterInput.value = '';
+        window.currentFilterDate = null;
+        if (clearDateFilterButton) clearDateFilterButton.classList.add('hidden');
+
+        // Move active nav styling to Saved Videos tab
+        navItems.forEach(nav => nav.classList.remove('active'));
+        savedNav.classList.add('active');
+
+        // Hide other content sections and show saved section
+        document.querySelectorAll('.content-section').forEach(section => section.classList.remove('active'));
+        const savedSection = document.getElementById('saved-videos-section');
+        if (savedSection) savedSection.classList.add('active');
+
+        // Hide player/theater to show list view
+        const theater = document.getElementById('theaterContainer');
+        if (theater) theater.classList.add('hidden');
+
+        // Auto-close sidebar on mobile
+        if (window.innerWidth <= 768 && sidebarWrapper && sidebarWrapper.classList.contains('active')) {
+            sidebarWrapper.classList.remove('active');
+        }
+
+        // Immediately fetch device-local saved videos and render
+        try {
+            if (typeof renderSavedVideosLibrary === 'function') renderSavedVideosLibrary();
+        } catch (e) { console.warn('Failed to render saved videos', e); }
+    });
+});
 
 function renderWatchMoreCard(docItem) {
     const item = docItem.data || {};
@@ -4665,6 +5064,135 @@ async function initializeYouTubeButton() {
 // Run initialization
 initializeYouTubeButton();
 
+// -----------------------------
+// Support Modal & STK Simulation
+// -----------------------------
+document.addEventListener('DOMContentLoaded', () => {
+    const supportBtn = document.getElementById('supportBtn');
+    const supportModal = document.getElementById('supportModal');
+    const supportBackdrop = document.querySelector('.support-modal-backdrop');
+    const supportPanel = document.querySelector('.support-modal-panel');
+    const supportCloseButtons = document.querySelectorAll('[data-close-support], .support-modal-close');
+    const supportTabs = document.querySelectorAll('.support-tab');
+    const projectSelectRow = document.getElementById('projectSelectRow');
+    const supportForm = document.getElementById('supportForm');
+    const supportSubmit = document.getElementById('supportSubmit');
+    const stkListening = document.getElementById('stkListening');
+    const stkSecondsEl = document.getElementById('stkSeconds');
+    const stkCancel = document.getElementById('stkCancel');
+
+    let stkInterval = null;
+    let stkSecondsRemaining = 90;
+    let lastSupportPayload = null;
+
+    function openSupportModal() {
+        if (!supportModal) return;
+        supportModal.setAttribute('aria-hidden', 'false');
+        document.body.style.overflow = 'hidden';
+        // reset to default form view
+        supportForm?.classList.remove('hidden');
+        stkListening?.classList.add('hidden');
+        stkSecondsRemaining = 90;
+        stkSecondsEl && (stkSecondsEl.textContent = stkSecondsRemaining);
+        projectSelectRow && projectSelectRow.classList.add('hidden');
+        supportTabs.forEach(t => t.classList.toggle('active', t.dataset.tab === 'general'));
+        setTimeout(() => {
+            const phone = document.getElementById('mpesaPhone');
+            phone && phone.focus();
+        }, 80);
+    }
+
+    function closeSupportModal() {
+        if (!supportModal) return;
+        supportModal.setAttribute('aria-hidden', 'true');
+        document.body.style.overflow = '';
+        stopSTKSimulation();
+    }
+
+    function stopSTKSimulation() {
+        if (stkInterval) {
+            clearInterval(stkInterval);
+            stkInterval = null;
+        }
+        stkSecondsRemaining = 90;
+        stkSecondsEl && (stkSecondsEl.textContent = stkSecondsRemaining);
+    }
+
+    function startSTKSimulation(payload) {
+        // hide form, show listening
+        supportForm && supportForm.classList.add('hidden');
+        stkListening && stkListening.classList.remove('hidden');
+        stkSecondsRemaining = 90;
+        stkSecondsEl && stkSecondsEl.textContent && (stkSecondsEl.textContent = stkSecondsRemaining);
+        // store payload for demonstration (project vs general)
+        lastSupportPayload = payload;
+        console.log('Simulated STK push started (demo payload):', payload);
+
+        stkInterval = setInterval(() => {
+            stkSecondsRemaining -= 1;
+            if (stkSecondsEl) stkSecondsEl.textContent = stkSecondsRemaining;
+            if (stkSecondsRemaining <= 0) {
+                stopSTKSimulation();
+                // close modal when time expires
+                closeSupportModal();
+                alert('Session listening closed. Please try again if you still want to support us.');
+            }
+        }, 1000);
+    }
+
+    // Open modal
+    supportBtn && supportBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        openSupportModal();
+    });
+
+    // Close handlers
+    supportBackdrop && supportBackdrop.addEventListener('click', closeSupportModal);
+    supportCloseButtons.forEach(btn => btn.addEventListener('click', closeSupportModal));
+
+    // Tabs
+    supportTabs.forEach(tab => {
+        tab.addEventListener('click', () => {
+            supportTabs.forEach(t => t.classList.remove('active'));
+            tab.classList.add('active');
+            if (tab.dataset.tab === 'project') {
+                projectSelectRow && projectSelectRow.classList.remove('hidden');
+            } else {
+                projectSelectRow && projectSelectRow.classList.add('hidden');
+            }
+        });
+    });
+
+    // Form submit
+    supportForm && supportForm.addEventListener('submit', (ev) => {
+        ev.preventDefault();
+        const phone = (document.getElementById('mpesaPhone')?.value || '').trim();
+        const amount = (document.getElementById('mpesaAmount')?.value || '').trim();
+        const project = (document.getElementById('projectSelect')?.value || '').trim();
+        const activeTab = document.querySelector('.support-tab.active')?.dataset.tab || 'general';
+
+        if (!phone || !amount) {
+            alert('Please enter a phone number and amount.');
+            return;
+        }
+
+        const payload = {
+            phone, amount: Number(amount), workflow: activeTab,
+            project: activeTab === 'project' ? project : 'general'
+        };
+
+        // For demo, start simulated STK push
+        startSTKSimulation(payload);
+    });
+
+    // Cancel STK listening
+    stkCancel && stkCancel.addEventListener('click', () => {
+        stopSTKSimulation();
+        // show form again
+        stkListening && stkListening.classList.add('hidden');
+        supportForm && supportForm.classList.remove('hidden');
+    });
+});
 // Export functions for external use (if needed)
 window.isCurrentUserAdmin = isCurrentUserAdmin;
 window.isYouTubeSyncCompleted = isYouTubeSyncCompleted;
