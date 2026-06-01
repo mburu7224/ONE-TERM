@@ -274,6 +274,45 @@ function notifyUser(isSuccess, message) {
     if (overlay) overlay.onclick = modalClose.onclick;
 }
 
+// Show a connection reminder modal when the user is offline and tries to play a video
+function showConnectionReminder() {
+    let modal = document.getElementById('connectionReminderModal');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'connectionReminderModal';
+        modal.className = 'settings-modal';
+        modal.setAttribute('aria-hidden', 'true');
+        modal.innerHTML = `
+            <div class="settings-modal-backdrop" data-close-connection></div>
+            <div class="settings-modal-panel" role="dialog" aria-modal="true" aria-labelledby="connectionReminderTitle">
+                <button class="settings-modal-close" type="button" aria-label="Close" data-close-connection>
+                    <i class="fas fa-times" aria-hidden="true"></i>
+                </button>
+                <h2 id="connectionReminderTitle">You are offline</h2>
+                <div class="settings-modal-body">
+                    <p class="connection-message">⚡ You are currently offline. Please connect to the internet to stream this video! Your saved list and history profiles are still accessible.</p>
+                    <div class="form-actions">
+                        <button id="connectionReminderClose" type="button" class="primary-btn">OK</button>
+                    </div>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+
+        const closeButtons = modal.querySelectorAll('[data-close-connection], #connectionReminderClose');
+        closeButtons.forEach(btn => btn.addEventListener('click', () => {
+            modal.setAttribute('aria-hidden', 'true');
+            modal.style.display = 'none';
+        }));
+
+        const backdrop = modal.querySelector('.settings-modal-backdrop');
+        if (backdrop) backdrop.addEventListener('click', () => { modal.setAttribute('aria-hidden', 'true'); modal.style.display = 'none'; });
+    }
+
+    modal.setAttribute('aria-hidden', 'false');
+    modal.style.display = 'flex';
+}
+
 function setSidebarOpen(isOpen) {
     const sidebarWrapper = document.querySelector('.sidebar-wrapper');
     const sidebarOverlay = document.getElementById('sidebarOverlay');
@@ -1710,6 +1749,11 @@ function renderHomeThumbnail(docItem) {
 }
 
 function openTheaterWithVideo(selectedDoc, allDocs) {
+    // Block playback when offline and show connection reminder modal
+    if (typeof navigator !== 'undefined' && navigator && navigator.onLine === false) {
+        showConnectionReminder();
+        return;
+    }
     const theater = document.getElementById('theaterContainer');
     const grid = document.getElementById('homeVideoGrid');
     const loadMoreMount = document.getElementById('homeLoadMoreMount');
